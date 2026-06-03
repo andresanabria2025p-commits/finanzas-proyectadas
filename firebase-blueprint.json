@@ -1,0 +1,78 @@
+{
+  "entities": {
+    "UserData": {
+      "title": "UserData",
+      "description": "Configuraciones globales del usuario como tema de la interfaz y clave/PIN de acceso local.",
+      "type": "object",
+      "properties": {
+        "appPasscode": {
+          "type": "string",
+          "description": "PIN de seguridad encriptado o texto plano local para bloquear la pantalla."
+        },
+        "theme": {
+          "type": "string",
+          "description": "Preferencia de tema elegida, ej: dark o light."
+        }
+      }
+    },
+    "ProfileData": {
+      "title": "ProfileData",
+      "description": "Ahorros, ingresos, gastos fijos, deudas de TDC / préstamos, y transacciones de un perfil específico.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificador textual o numérico único de este perfil."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre representativo del perfil de presupuesto."
+        },
+        "config": {
+          "type": "object",
+          "description": "Ajustes de balance inicial, rango de fechas y margen de seguridad."
+        },
+        "incomes": {
+          "type": "array",
+          "description": "Lista de ingresos recurrentes configurados."
+        },
+        "expenses": {
+          "type": "array",
+          "description": "Lista de gastos fijos recurrentes programados."
+        },
+        "liabilities": {
+          "type": "array",
+          "description": "Lista de pasivos (préstamos y tarjetas de crédito)."
+        },
+        "transactions": {
+          "type": "array",
+          "description": "Registro de transacciones o movimientos realizados adicionales."
+        },
+        "realizedMovements": {
+          "type": "array",
+          "description": "Bitácora histórica de conciliación para ingresos y gastos proyectados."
+        },
+        "trash_bin": {
+          "type": "array",
+          "description": "Elementos eliminados para permitir deshacer acciones."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última fecha de modificación en el servidor para resolver conflictos de sincronización."
+        }
+      },
+      "required": ["id", "name", "config"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "UserData",
+      "description": "Contiene datos globales de personalización de cada usuario autenticado."
+    },
+    "users/{userId}/profiles/{profileId}": {
+      "schema": "ProfileData",
+      "description": "Portafolios o perfiles financieros individuales del usuario para proyectar liquidez y deudas."
+    }
+  }
+}

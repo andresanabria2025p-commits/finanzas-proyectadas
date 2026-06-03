@@ -34,8 +34,20 @@ import {
   CreditCard,
   CheckCircle2,
   AlertTriangle,
-  Database
+  Database,
+  Lock,
+  Unlock,
+  ShieldCheck,
+  ShieldAlert,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Cloud
 } from 'lucide-react';
+import LockScreen from './components/LockScreen';
+import { auth, db, googleProvider, OperationType, handleFirestoreError } from './utils/firebase';
+import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { doc, getDoc, getDocs, setDoc, deleteDoc, collection } from 'firebase/firestore';
 
 // Datos por defecto enriquecidos para inicialización del perfil principal
 const DEFAULT_CONFIG: Config = {
@@ -128,10 +140,30 @@ export default function App() {
   const [newProfileName, setNewProfileName] = useState('');
   const [showDeleteProfileModal, setShowDeleteProfileModal] = useState(false);
 
+  // --- CLAVE / PIN DE ACCESO LOCAL ---
+  const [appPasscode, setAppPasscode] = useState<string | null>(() => {
+    return localStorage.getItem('app_passcode');
+  });
+  const [isLocked, setIsLocked] = useState<boolean>(() => {
+    return !!localStorage.getItem('app_passcode');
+  });
+  const [showSetupPasscodeModal, setShowSetupPasscodeModal] = useState(false);
+  const [showClearPasscodeModal, setShowClearPasscodeModal] = useState(false);
+  const [setupPasscoodeInput, setSetupPasscoodeInput] = useState('');
+  const [setupPasscodeConfirm, setSetupPasscodeConfirm] = useState('');
+  const [clearPasscodeInput, setClearPasscodeInput] = useState('');
+
   // --- IMPORTACION / EXPORTACION DE RESPALDOS ---
   const [importPendingData, setImportPendingData] = useState<any | null>(null);
   const [importFileName, setImportFileName] = useState<string>('');
   const [importOptionSingle, setImportOptionSingle] = useState<'new_profile' | 'replace_active'>('new_profile');
+
+  // --- ESTADOS DE AUTENTICACION Y SINCRONIZACION CLOUD ---
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const [showSyncMergeModal, setShowSyncMergeModal] = useState(false);
+  const [cloudProfilesList, setCloudProfilesList] = useState<Profile[]>([]);
 
   // --- ESTADOS FINANCIEROS DEL PERFIL SELECCIONADO ---
   const getProfileKey = (key: string) => `profiles_data_${currentProfileId}_${key}`;
@@ -153,6 +185,180 @@ export default function App() {
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 4000);
+  };
+
+  // --- ESCUCHA DE AUTENTICACION EN TIEMPO REAL ---
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        setUser(u);
+        // Cargar Pin o Passcode del servidor si estuviera configurado
+        try {
+          const userDoc = await getDoc(doc(db, 'users', u.uid));
+          if (userDoc.exists()) {
+            const d = userDoc.data();
+            if (d.appPasscode) {
+              setAppPasscode(d.appPasscode);
+              localStorage.setItem('app_passcode', d.appPasscode);
+            }
+          }
+        } catch (e) {
+          console.error("No se pudo descargar el pin del servidor:", e);
+        }
+      } else {
+        setUser(null);
+      }
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleGoogleLogin = async () => {
+    try {
+      setIsAuthLoading(true);
+      const result = await signInWithPopup(auth, googleProvider);
+      setUser(result.user);
+      showToast(`Sesión iniciada con éxito como ${result.user.email}`, 'success');
+      await evaluateCloudDataOnLogin(result.user);
+    } catch (err) {
+      console.error("Error al iniciar sesión con Google:", err);
+      showToast('Error al iniciar sesión con Google.', 'warn');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      showToast('Sesión cerrada correctamente. Volviendo a modo local.', 'info');
+      // Forzar recarga para limpiar memoria local temporal
+      setTimeout(() => window.location.reload(), 1000);
+    } catch (err) {
+      console.error(err);
+      showToast('Error al cerrar sesión.', 'warn');
+    }
+  };
+
+  const evaluateCloudDataOnLogin = async (loggedUser: User) => {
+    setIsCloudSyncing(true);
+    try {
+      const q = collection(db, 'users', loggedUser.uid, 'profiles');
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        // La base de datos está vacía. Es un primer inicio de sesión, ofrecemos subir los datos locales.
+        setCloudProfilesList([]);
+        setShowSyncMergeModal(true);
+      } else {
+        // La nube ya tiene perfiles existentes, mostramos el modal para elegir descarga o sobreescritura/unión.
+        const cloudProfs: Profile[] = [];
+        snapshot.forEach(docSnap => {
+          const d = docSnap.data();
+          cloudProfs.push({ id: Number(d.id), name: d.name });
+        });
+        setCloudProfilesList(cloudProfs);
+        setShowSyncMergeModal(true);
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `users/${loggedUser.uid}/profiles`);
+      showToast('Error al evaluar los respaldos de la nube.', 'warn');
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
+
+  const handleDownloadCloudData = async () => {
+    if (!user) return;
+    setIsCloudSyncing(true);
+    try {
+      const q = collection(db, 'users', user.uid, 'profiles');
+      const snapshot = await getDocs(q);
+      
+      const loadedProfilesList: Profile[] = [];
+      snapshot.forEach(docSnap => {
+        const d = docSnap.data();
+        const pid = Number(d.id);
+        loadedProfilesList.push({ id: pid, name: d.name });
+        
+        const pKey = (k: string) => `profiles_data_${pid}_${k}`;
+        localStorage.setItem(pKey('config'), JSON.stringify(d.config || DEFAULT_CONFIG));
+        localStorage.setItem(pKey('incomes'), JSON.stringify(d.incomes || []));
+        localStorage.setItem(pKey('expenses'), JSON.stringify(d.expenses || []));
+        localStorage.setItem(pKey('liabilities'), JSON.stringify(d.liabilities || []));
+        localStorage.setItem(pKey('transactions'), JSON.stringify(d.transactions || []));
+        localStorage.setItem(pKey('realizedMovements'), JSON.stringify(d.realizedMovements || []));
+        localStorage.setItem(pKey('trash_bin'), JSON.stringify(d.trash_bin || []));
+      });
+
+      if (loadedProfilesList.length > 0) {
+        setProfiles(loadedProfilesList);
+        localStorage.setItem('profiles_list', JSON.stringify(loadedProfilesList));
+        
+        const firstId = loadedProfilesList[0].id;
+        setCurrentProfileId(firstId);
+
+        // Alimentar estados reactivos
+        const pKey = (k: string) => `profiles_data_${firstId}_${k}`;
+        setConfig(JSON.parse(localStorage.getItem(pKey('config')) || JSON.stringify(DEFAULT_CONFIG)));
+        setIncomes(JSON.parse(localStorage.getItem(pKey('incomes')) || '[]'));
+        setExpenses(JSON.parse(localStorage.getItem(pKey('expenses')) || '[]'));
+        setLiabilities(JSON.parse(localStorage.getItem(pKey('liabilities')) || '[]'));
+        setTransactions(JSON.parse(localStorage.getItem(pKey('transactions')) || '[]'));
+        setRealizedMovements(JSON.parse(localStorage.getItem(pKey('realizedMovements')) || '[]'));
+        setTrashBin(JSON.parse(localStorage.getItem(pKey('trash_bin')) || '[]'));
+
+        showToast('¡Datos de la nube sincronizados en tu dispositivo!', 'success');
+      } else {
+        showToast('No se encontraron datos en tu cuenta.', 'warn');
+      }
+      setShowSyncMergeModal(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `users/${user.uid}/profiles`);
+      showToast('Error al descargar los perfiles del servidor.', 'warn');
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
+
+  const handleUploadLocalDataToCloud = async () => {
+    if (!user) return;
+    setIsCloudSyncing(true);
+    try {
+      for (const p of profiles) {
+        const pKey = (k: string) => `profiles_data_${p.id}_${k}`;
+        
+        const savedConfig = JSON.parse(localStorage.getItem(pKey('config')) || JSON.stringify(DEFAULT_CONFIG));
+        const savedIncomes = JSON.parse(localStorage.getItem(pKey('incomes')) || (p.id === 1 ? JSON.stringify(DEFAULT_INCOMES) : '[]'));
+        const savedExpenses = JSON.parse(localStorage.getItem(pKey('expenses')) || (p.id === 1 ? JSON.stringify(DEFAULT_EXPENSES) : '[]'));
+        const savedLiabilities = JSON.parse(localStorage.getItem(pKey('liabilities')) || (p.id === 1 ? JSON.stringify(DEFAULT_LIABILITIES) : '[]'));
+        const savedTransactions = JSON.parse(localStorage.getItem(pKey('transactions')) || (p.id === 1 ? JSON.stringify(DEFAULT_TRANSACTIONS) : '[]'));
+        const savedRealized = JSON.parse(localStorage.getItem(pKey('realizedMovements')) || '[]');
+        const savedTrash = JSON.parse(localStorage.getItem(pKey('trash_bin')) || '[]');
+
+        const profileDocRef = doc(db, 'users', user.uid, 'profiles', String(p.id));
+        await setDoc(profileDocRef, {
+          id: String(p.id),
+          name: p.name,
+          config: savedConfig,
+          incomes: savedIncomes,
+          expenses: savedExpenses,
+          liabilities: savedLiabilities,
+          transactions: savedTransactions,
+          realizedMovements: savedRealized,
+          trash_bin: savedTrash,
+          updatedAt: new Date().toISOString()
+        });
+      }
+      showToast('¡Respaldo exitoso! Todo tu presupuesto se subió a la nube.', 'success');
+      setShowSyncMergeModal(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}/profiles`);
+      showToast('Error al respaldar la información local.', 'warn');
+    } finally {
+      setIsCloudSyncing(false);
+    }
   };
 
   // --- CARGA DE DATOS BASADO EN PERFIL SELECCIONADO ---
@@ -219,41 +425,105 @@ export default function App() {
 
   }, [currentProfileId]);
 
-  // --- SATELLITE PERSISTENCIA AL MODIFICAR VARIABLES ---
+  // --- SATELLITE PERSISTENCIA AL MODIFICAR VARIABLES UNIFICADA ---
+  const persistProfile = async (
+    profileId: number,
+    updatedFields: {
+      name?: string;
+      config?: Config;
+      incomes?: Income[];
+      expenses?: Expense[];
+      liabilities?: Liability[];
+      transactions?: Transaction[];
+      realizedMovements?: RealizedMovement[];
+      trash_bin?: TrashItem[];
+    }
+  ) => {
+    // 1. Modificar estados React del perfil activo actualmente
+    if (profileId === currentProfileId) {
+      if (updatedFields.config !== undefined) setConfig(updatedFields.config);
+      if (updatedFields.incomes !== undefined) setIncomes(updatedFields.incomes);
+      if (updatedFields.expenses !== undefined) setExpenses(updatedFields.expenses);
+      if (updatedFields.liabilities !== undefined) setLiabilities(updatedFields.liabilities);
+      if (updatedFields.transactions !== undefined) setTransactions(updatedFields.transactions);
+      if (updatedFields.realizedMovements !== undefined) setRealizedMovements(updatedFields.realizedMovements);
+      if (updatedFields.trash_bin !== undefined) setTrashBin(updatedFields.trash_bin);
+    }
+
+    // 2. Modificar localStorage
+    const pKey = (k: string) => `profiles_data_${profileId}_${k}`;
+    if (updatedFields.name !== undefined) {
+      const updatedProfilesList = profiles.map(p => p.id === profileId ? { ...p, name: updatedFields.name! } : p);
+      setProfiles(updatedProfilesList);
+      localStorage.setItem('profiles_list', JSON.stringify(updatedProfilesList));
+    }
+    if (updatedFields.config !== undefined) localStorage.setItem(pKey('config'), JSON.stringify(updatedFields.config));
+    if (updatedFields.incomes !== undefined) localStorage.setItem(pKey('incomes'), JSON.stringify(updatedFields.incomes));
+    if (updatedFields.expenses !== undefined) localStorage.setItem(pKey('expenses'), JSON.stringify(updatedFields.expenses));
+    if (updatedFields.liabilities !== undefined) localStorage.setItem(pKey('liabilities'), JSON.stringify(updatedFields.liabilities));
+    if (updatedFields.transactions !== undefined) localStorage.setItem(pKey('transactions'), JSON.stringify(updatedFields.transactions));
+    if (updatedFields.realizedMovements !== undefined) localStorage.setItem(pKey('realizedMovements'), JSON.stringify(updatedFields.realizedMovements));
+    if (updatedFields.trash_bin !== undefined) localStorage.setItem(pKey('trash_bin'), JSON.stringify(updatedFields.trash_bin));
+
+    // 3. Sincronización en la Nube si hay sesión iniciada de Firebase Auth
+    if (auth.currentUser) {
+      try {
+        const profileDocRef = doc(db, 'users', auth.currentUser.uid, 'profiles', String(profileId));
+
+        const displayName = updatedFields.name ?? (profiles.find(p => p.id === profileId)?.name || 'Perfil');
+        const docConfig = updatedFields.config ?? (profileId === currentProfileId ? config : JSON.parse(localStorage.getItem(pKey('config')) || JSON.stringify(DEFAULT_CONFIG)));
+        const docIncomes = updatedFields.incomes ?? (profileId === currentProfileId ? incomes : JSON.parse(localStorage.getItem(pKey('incomes')) || '[]'));
+        const docExpenses = updatedFields.expenses ?? (profileId === currentProfileId ? expenses : JSON.parse(localStorage.getItem(pKey('expenses')) || '[]'));
+        const docLiabilities = updatedFields.liabilities ?? (profileId === currentProfileId ? liabilities : JSON.parse(localStorage.getItem(pKey('liabilities')) || '[]'));
+        const docTransactions = updatedFields.transactions ?? (profileId === currentProfileId ? transactions : JSON.parse(localStorage.getItem(pKey('transactions')) || '[]'));
+        const docRealized = updatedFields.realizedMovements ?? (profileId === currentProfileId ? realizedMovements : JSON.parse(localStorage.getItem(pKey('realizedMovements')) || '[]'));
+        const docTrash = updatedFields.trash_bin ?? (profileId === currentProfileId ? trashBin : JSON.parse(localStorage.getItem(pKey('trash_bin')) || '[]'));
+
+        await setDoc(profileDocRef, {
+          id: String(profileId),
+          name: displayName,
+          config: docConfig,
+          incomes: docIncomes,
+          expenses: docExpenses,
+          liabilities: docLiabilities,
+          transactions: docTransactions,
+          realizedMovements: docRealized,
+          trash_bin: docTrash,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${auth.currentUser.uid}/profiles/${profileId}`);
+      }
+    }
+  };
+
   const saveConfig = (newCfg: Config) => {
-    setConfig(newCfg);
-    localStorage.setItem(getProfileKey('config'), JSON.stringify(newCfg));
+    persistProfile(currentProfileId, { config: newCfg });
     showToast('Ciclo presupuestario actualizado.', 'success');
   };
 
   const saveIncomesList = (list: Income[]) => {
-    setIncomes(list);
-    localStorage.setItem(getProfileKey('incomes'), JSON.stringify(list));
+    persistProfile(currentProfileId, { incomes: list });
   };
 
   const saveExpensesList = (list: Expense[]) => {
-    setExpenses(list);
-    localStorage.setItem(getProfileKey('expenses'), JSON.stringify(list));
+    persistProfile(currentProfileId, { expenses: list });
   };
 
   const saveLiabilitiesList = (list: Liability[]) => {
-    setLiabilities(list);
-    localStorage.setItem(getProfileKey('liabilities'), JSON.stringify(list));
+    persistProfile(currentProfileId, { liabilities: list });
   };
 
   const saveTransactionsList = (list: Transaction[]) => {
-    setTransactions(list);
-    localStorage.setItem(getProfileKey('transactions'), JSON.stringify(list));
+    persistProfile(currentProfileId, { transactions: list });
   };
 
   const saveRealizedList = (list: RealizedMovement[]) => {
-    setRealizedMovements(list);
-    localStorage.setItem(getProfileKey('realizedMovements'), JSON.stringify(list));
+    persistProfile(currentProfileId, { realizedMovements: list });
   };
 
   const saveTrashBin = (list: TrashItem[]) => {
-    setTrashBin(list);
-    localStorage.setItem(getProfileKey('trash_bin'), JSON.stringify(list));
+    persistProfile(currentProfileId, { trash_bin: list });
   };
 
   // --- OPERACIONES CRUD PRINCIPALES ---
@@ -591,17 +861,32 @@ export default function App() {
   };
 
   // Modal para agregar perfil
-  const handleCreateProfile = () => {
+  const handleCreateProfile = async () => {
     const name = newProfileName.trim();
     if (!name) return;
 
     const newId = profiles.length > 0 ? Math.max(...profiles.map(p => p.id)) + 1 : 1;
     const newProf: Profile = { id: newId, name };
     
-    setProfiles([...profiles, newProf]);
+    // Guardar local y nube
+    const updatedProfilesList = [...profiles, newProf];
+    setProfiles(updatedProfilesList);
+    localStorage.setItem('profiles_list', JSON.stringify(updatedProfilesList));
     setCurrentProfileId(newId);
     setNewProfileName('');
     setShowAddProfileModal(false);
+
+    await persistProfile(newId, {
+      name,
+      config: DEFAULT_CONFIG,
+      incomes: [],
+      expenses: [],
+      liabilities: [],
+      transactions: [],
+      realizedMovements: [],
+      trash_bin: []
+    });
+
     showToast(`Perfil de presupuesto "${name}" creado.`, 'success');
   };
 
@@ -610,25 +895,106 @@ export default function App() {
     setShowDeleteProfileModal(true);
   };
 
-  const handleConfirmDeleteProfile = () => {
+  const handleConfirmDeleteProfile = async () => {
     if (profiles.length <= 1) return;
-    const filtered = profiles.filter(p => p.id !== currentProfileId);
+    const deletedId = currentProfileId;
+    const filtered = profiles.filter(p => p.id !== deletedId);
     
     // Limpiar llaves residuales de este perfil en localStorage
-    localStorage.removeItem(getProfileKey('config'));
-    localStorage.removeItem(getProfileKey('incomes'));
-    localStorage.removeItem(getProfileKey('expenses'));
-    localStorage.removeItem(getProfileKey('liabilities'));
-    localStorage.removeItem(getProfileKey('transactions'));
-    localStorage.removeItem(getProfileKey('realizedMovements'));
-    localStorage.removeItem(getProfileKey('trash_bin'));
+    localStorage.removeItem(`profiles_data_${deletedId}_config`);
+    localStorage.removeItem(`profiles_data_${deletedId}_incomes`);
+    localStorage.removeItem(`profiles_data_${deletedId}_expenses`);
+    localStorage.removeItem(`profiles_data_${deletedId}_liabilities`);
+    localStorage.removeItem(`profiles_data_${deletedId}_transactions`);
+    localStorage.removeItem(`profiles_data_${deletedId}_realizedMovements`);
+    localStorage.removeItem(`profiles_data_${deletedId}_trash_bin`);
 
     setProfiles(filtered);
     localStorage.setItem('profiles_list', JSON.stringify(filtered));
-    setCurrentProfileId(filtered[0].id);
+    
+    const nextActive = filtered[0].id;
+    setCurrentProfileId(nextActive);
+
+    // Actualizar estados reactivos inmediatos
+    const pKey = (k: string) => `profiles_data_${nextActive}_${k}`;
+    setConfig(JSON.parse(localStorage.getItem(pKey('config')) || JSON.stringify(DEFAULT_CONFIG)));
+    setIncomes(JSON.parse(localStorage.getItem(pKey('incomes')) || '[]'));
+    setExpenses(JSON.parse(localStorage.getItem(pKey('expenses')) || '[]'));
+    setLiabilities(JSON.parse(localStorage.getItem(pKey('liabilities')) || '[]'));
+    setTransactions(JSON.parse(localStorage.getItem(pKey('transactions')) || '[]'));
+    setRealizedMovements(JSON.parse(localStorage.getItem(pKey('realizedMovements')) || '[]'));
+    setTrashBin(JSON.parse(localStorage.getItem(pKey('trash_bin')) || '[]'));
+
+    // Eliminar de Firebase si está autenticado
+    if (auth.currentUser) {
+      try {
+        await deleteDoc(doc(db, 'users', auth.currentUser.uid, 'profiles', String(deletedId)));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `users/${auth.currentUser.uid}/profiles/${deletedId}`);
+      }
+    }
 
     setShowDeleteProfileModal(false);
     showToast('Perfil de presupuesto borrado permanentemente.', 'warn');
+  };
+
+  // --- FUNCIONES DE PROTECCIÓN DE ACCESO POR PIN/CLAVE ---
+  const handleConfirmSetupPasscode = async () => {
+    const input = setupPasscoodeInput.trim();
+    const conf = setupPasscodeConfirm.trim();
+
+    if (!input) {
+      showToast('La clave o PIN no puede estar en blanco.', 'warn');
+      return;
+    }
+    if (input !== conf) {
+      showToast('Las claves introducidas no coinciden.', 'warn');
+      return;
+    }
+
+    localStorage.setItem('app_passcode', input);
+    setAppPasscode(input);
+
+    if (auth.currentUser) {
+      try {
+        await setDoc(doc(db, 'users', auth.currentUser.uid), { appPasscode: input }, { merge: true });
+      } catch (e) {
+        console.error("Error al persistir PIN en el servidor:", e);
+      }
+    }
+
+    setShowSetupPasscodeModal(false);
+    setSetupPasscoodeInput('');
+    setSetupPasscodeConfirm('');
+    showToast('Protección con clave de acceso activada correctamente.', 'success');
+  };
+
+  const handleConfirmClearPasscode = async () => {
+    const input = clearPasscodeInput.trim();
+    if (!input) {
+      showToast('Debes ingresar tu clave actual para desactivar la seguridad.', 'warn');
+      return;
+    }
+    if (input !== appPasscode) {
+      showToast('La clave actual introducida es incorrecta.', 'warn');
+      return;
+    }
+
+    localStorage.removeItem('app_passcode');
+    setAppPasscode(null);
+    setIsLocked(false);
+
+    if (auth.currentUser) {
+      try {
+        await setDoc(doc(db, 'users', auth.currentUser.uid), { appPasscode: '' }, { merge: true });
+      } catch (e) {
+        console.error("Error al desactivar PIN en el servidor:", e);
+      }
+    }
+
+    setClearPasscodeInput('');
+    setShowClearPasscodeModal(false);
+    showToast('Protección eliminada. Tu aplicación es de acceso libre ahora.', 'info');
   };
 
   // --- RESPALDOS Y BACKUPS (IMPORTACIÓN Y EXPORTACIÓN) ---
@@ -847,6 +1213,24 @@ export default function App() {
   // Responsive Navbar Drawer para móviles
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  if (isLocked) {
+    return (
+      <LockScreen
+        correctPasscode={appPasscode || ''}
+        onUnlock={() => {
+          setIsLocked(false);
+          showToast('Bienvenido de nuevo. Acceso autorizado.', 'success');
+        }}
+        onReset={() => {
+          if (window.confirm('⚠️ ATENCIÓN: Esto restablecerá la aplicación por completo. Se eliminarán de forma permanente todos tus perfiles de presupuesto, deudas, transacciones y configuraciones específicas guardadas en este navegador (localStorage). ¿Deseas proceder?')) {
+            localStorage.clear();
+            window.location.reload();
+          }
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col font-sans transition-colors duration-300">
       
@@ -910,6 +1294,37 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-3">
+            {/* Sincronización en la Nube con Google */}
+            {isAuthLoading ? (
+              <div className="w-5 h-5 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" />
+            ) : user ? (
+              <div className="flex items-center gap-2 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 p-1 pl-2 pr-2.5 rounded-full text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                {user.photoURL ? (
+                  <img src={user.photoURL} referrerPolicy="no-referrer" className="w-5 h-5 rounded-full" alt="Profile" />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px]">U</div>
+                )}
+                <span className="max-w-[70px] sm:max-w-[120px] truncate hidden sm:inline">{user.displayName || user.email}</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="Sincronizado en la Nube" />
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleGoogleLogout(); }}
+                  title="Cerrar sesión"
+                  className="ml-1 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={handleGoogleLogin}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer hover:shadow hover:scale-[1.01]"
+              >
+                <Cloud size={14} />
+                <span className="hidden xs:inline">Respaldar en Nube</span>
+                <span className="xs:hidden">Nube</span>
+              </button>
+            )}
+
             {/* Tema Switcher */}
             <button
               onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
@@ -977,6 +1392,13 @@ export default function App() {
               onExportAll={handleExportAll}
               onExportProfile={handleExportProfile}
               onImportTrigger={handleImportTrigger}
+              hasPasscode={!!appPasscode}
+              onSetupPasscode={() => setShowSetupPasscodeModal(true)}
+              onClearPasscode={() => setShowClearPasscodeModal(true)}
+              onLockApp={() => {
+                setIsLocked(true);
+                showToast('La aplicación se ha bloqueado de forma inmediata.', 'info');
+              }}
             />
           </div>
 
@@ -1223,6 +1645,180 @@ export default function App() {
                   Sobrescribir Todo
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CONFIGURAR CLAVE/PIN DE SEGURIDAD */}
+      {showSetupPasscodeModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-5 shadow-2xl animate-in fade-in duration-200">
+            <div className="w-10 h-10 bg-emerald-100 dark:bg-emerald-950/40 rounded-xl flex items-center justify-center text-emerald-600 dark:text-emerald-450 mb-3.5">
+              <KeyRound size={20} />
+            </div>
+
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2">
+              🔒 Configurar PIN o Clave de Acceso
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+              Establece una clave o PIN de acceso (letras o números) para proteger la visualización de tus datos financieros en este dispositivo.
+            </p>
+
+            <div className="space-y-3 mb-5">
+              <div>
+                <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400 dark:text-slate-500 block mb-1">
+                  Nueva Clave o PIN
+                </label>
+                <input
+                  type="password"
+                  value={setupPasscoodeInput}
+                  onChange={e => setSetupPasscoodeInput(e.target.value)}
+                  placeholder="Ej: 1234"
+                  className="w-full text-slate-800 dark:text-white bg-slate-50 dark:bg-slate-800 border border-slate-250 dark:border-slate-700 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/10"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400 dark:text-slate-500 block mb-1">
+                  Confirmar Clave o PIN
+                </label>
+                <input
+                  type="password"
+                  value={setupPasscodeConfirm}
+                  onChange={e => setSetupPasscodeConfirm(e.target.value)}
+                  placeholder="Ej: 1234"
+                  className="w-full text-slate-800 dark:text-white bg-slate-50 dark:bg-slate-800 border border-slate-250 dark:border-slate-700 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/10"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                onClick={() => {
+                  setShowSetupPasscodeModal(false);
+                  setSetupPasscoodeInput('');
+                  setSetupPasscodeConfirm('');
+                }}
+                className="py-2.5 px-4 rounded-xl text-[11px] font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-405 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmSetupPasscode}
+                className="py-2.5 px-5 rounded-xl text-[11px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm cursor-pointer"
+              >
+                Activar PIN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DESACTIVAR CLAVE/PIN DE SEGURIDAD */}
+      {showClearPasscodeModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-5 shadow-2xl animate-in fade-in duration-200">
+            <div className="w-10 h-10 bg-rose-100 dark:bg-rose-950/40 rounded-xl flex items-center justify-center text-rose-600 dark:text-rose-400 mb-3.5">
+              <Unlock size={20} />
+            </div>
+
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2">
+              🔓 Desactivar PIN o Clave de Acceso
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+              Ingresa tu clave de acceso actual para desactivar la seguridad y permitir el acceso libre a tus presupuestos.
+            </p>
+
+            <div className="mb-5">
+              <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400 dark:text-slate-500 block mb-1">
+                Clave o PIN Actual
+              </label>
+              <input
+                type="password"
+                value={clearPasscodeInput}
+                onChange={e => setClearPasscodeInput(e.target.value)}
+                placeholder="Ingresa tu PIN actual"
+                className="w-full text-slate-800 dark:text-white bg-slate-50 dark:bg-slate-800 border border-slate-250 dark:border-slate-700 rounded-xl px-3 py-2 text-sm outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/10"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                onClick={() => {
+                  setShowClearPasscodeModal(false);
+                  setClearPasscodeInput('');
+                }}
+                className="py-2.5 px-4 rounded-xl text-[11px] font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-405 auto-pointer cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmClearPasscode}
+                className="py-2.5 px-5 rounded-xl text-[11px] font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-sm cursor-pointer"
+              >
+                Desactivar Seguridad
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* MODAL CONFIGURACIÓN / SINCRONIZACIÓN MERGE CLOUD */}
+      {showSyncMergeModal && (
+        <div className="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl animate-in fade-in duration-200">
+            <div className="w-10 h-10 bg-emerald-100 dark:bg-emerald-950/40 rounded-xl flex items-center justify-center text-emerald-600 dark:text-emerald-400 mb-3.5 animate-bounce">
+              <Cloud size={20} />
+            </div>
+
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2">
+              ☁️ Sincronización en la Nube Finanz.io
+            </h3>
+            
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-4 leading-relaxed">
+              Has iniciado sesión correctamente. Para evitar pérdida o sobreescritura accidental de perfiles de presupuesto, por favor elige cómo deseas sincronizar tus datos por primera vez:
+            </p>
+
+            <div className="space-y-3 mb-5">
+              {/* Opción 1: Subir Datos Locales */}
+              <button
+                disabled={isCloudSyncing}
+                onClick={handleUploadLocalDataToCloud}
+                className="w-full text-left p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-emerald-500/50 bg-slate-50/50 hover:bg-slate-50 dark:bg-slate-800/40 dark:hover:bg-slate-800 transition-all flex flex-col gap-1 cursor-pointer group"
+              >
+                <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 group-hover:translate-x-0.5 transition-transform">
+                  Subir mi información local al servidor ↑
+                </span>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  Tomará los perfiles ({profiles.length}) de este dispositivo y los salvará en la nube bajo tu cuenta Google. Recomendado si tienes datos nuevos en este teléfono.
+                </p>
+              </button>
+
+              {/* Opción 2: Descargar de la Nube */}
+              {cloudProfilesList.length > 0 && (
+                <button
+                  disabled={isCloudSyncing}
+                  onClick={handleDownloadCloudData}
+                  className="w-full text-left p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-sky-500/50 bg-slate-50/50 hover:bg-slate-50 dark:bg-slate-800/40 dark:hover:bg-slate-800 transition-all flex flex-col gap-1 cursor-pointer group"
+                >
+                  <span className="text-[11px] font-bold text-sky-600 dark:text-sky-400 flex items-center gap-1.5 group-hover:translate-x-0.5 transition-transform">
+                    Descargar datos existentes desde la nube ↓
+                  </span>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Descargará tus {cloudProfilesList.length} perfiles respaldados ({cloudProfilesList.map(p => `"${p.name}"`).join(', ')}) y reemplazará los datos actuales de este navegador. Útil si cambiaste de teléfono.
+                  </p>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end">
+              <button
+                disabled={isCloudSyncing}
+                onClick={() => setShowSyncMergeModal(false)}
+                className="py-2.5 px-4 rounded-xl text-[11px] font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-pointer disabled:opacity-50"
+              >
+                Decidir después
+              </button>
             </div>
           </div>
         </div>

@@ -4,7 +4,7 @@
  */
 
 import { Profile, LedgerRow, OptimizedSuggestion, TrashItem } from '../types';
-import { AlertCircle, Trash2, HelpCircle, UserPlus, Trash, Sparkles, RotateCcw, Database, Download, Upload, Wallet } from 'lucide-react';
+import { AlertCircle, Trash2, HelpCircle, UserPlus, Trash, Sparkles, RotateCcw, Database, Download, Upload, Wallet, Lock, Unlock, ShieldCheck } from 'lucide-react';
 
 interface SidebarProps {
   profiles: Profile[];
@@ -20,6 +20,11 @@ interface SidebarProps {
   onExportAll: () => void;
   onExportProfile: () => void;
   onImportTrigger: (file: File) => void;
+  // Métodos y estados de clave de seguridad
+  hasPasscode: boolean;
+  onSetupPasscode: () => void;
+  onClearPasscode: () => void;
+  onLockApp: () => void;
 }
 
 export default function Sidebar({
@@ -36,6 +41,10 @@ export default function Sidebar({
   onExportAll,
   onExportProfile,
   onImportTrigger,
+  hasPasscode,
+  onSetupPasscode,
+  onClearPasscode,
+  onLockApp,
 }: SidebarProps) {
   // Encontrar alertas de liquidez o de ajuste
   const alertItems = ledgerData.filter(
@@ -229,6 +238,51 @@ export default function Sidebar({
             </label>
           </div>
         </div>
+      </div>
+
+      {/* Seguridad de Acceso */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm transition-all duration-300 hover:shadow-md">
+        <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 uppercase tracking-wider mb-2">
+          <Lock size={14} className="text-emerald-500" /> Seguridad de Acceso
+        </h3>
+        <p className="text-[10.5px] text-slate-450 dark:text-slate-400 mb-3.5 leading-normal">
+          Protege tu visualización y tus datos financieros de miradas curiosas mediante un PIN o clave estricta local.
+        </p>
+        
+        {hasPasscode ? (
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-450 bg-emerald-50/50 dark:bg-emerald-950/20 px-2.5 py-2 rounded-xl border border-emerald-100 dark:border-emerald-900/30">
+              <ShieldCheck size={14} className="flex-shrink-0" />
+              <span>Protección Activa localmente</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[10.5px] font-bold">
+              <button
+                onClick={onLockApp}
+                className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-slate-200 dark:border-slate-850 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-650 dark:text-slate-300 transition-colors cursor-pointer"
+                title="Bloquear la pantalla de la aplicación inmediatamente"
+              >
+                <Lock size={11} className="text-slate-505" />
+                <span>Bloquear</span>
+              </button>
+              <button
+                onClick={onClearPasscode}
+                className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-rose-200 dark:border-rose-950 hover:bg-rose-50/50 dark:hover:bg-rose-950/20 text-rose-600 dark:text-rose-400 transition-colors cursor-pointer"
+                title="Desactivar la protección pidiendo confirmación de clave"
+              >
+                <Unlock size={11} />
+                <span>Desactivar</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={onSetupPasscode}
+            className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 hover:border-emerald-500 hover:bg-emerald-105 dark:hover:bg-emerald-950/20 text-xs font-bold text-slate-600 dark:text-slate-300 transition-all cursor-pointer w-full text-center hover:shadow-inner"
+          >
+            <Lock size={13} className="text-emerald-500" />
+            <span>Configurar Clave / PIN</span>
+          </button>
+        )}
       </div>
 
       {/* Alertas y Notificaciones */}

@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. GLOBAL SAFETY NET
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // AUTH & SCHEMA HELPER PRIMITIVES
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 2. USER GLOBAL DATA SCHEMA
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create, update: if isOwner(userId) && (
+        (!incoming().keys().contains('appPasscode') || (incoming().appPasscode is string && incoming().appPasscode.size() <= 100)) &&
+        (!incoming().keys().contains('theme') || (incoming().theme is string && incoming().theme.size() <= 20))
+      );
+      allow delete: if isOwner(userId);
+    }
+
+    // 3. SECURE BUDGET PROFILES
+    match /users/{userId}/profiles/{profileId} {
+      allow get: if isOwner(userId) && isValidId(profileId);
+      allow list: if isOwner(userId);
+
+      allow create, update: if isOwner(userId) && isValidId(profileId) && (
+        incoming().id is string && incoming().id.size() <= 128 &&
+        incoming().name is string && incoming().name.size() <= 100 &&
+        incoming().config is map &&
+        (!incoming().keys().contains('incomes') || incoming().incomes is list) &&
+        (!incoming().keys().contains('expenses') || incoming().expenses is list) &&
+        (!incoming().keys().contains('liabilities') || incoming().liabilities is list) &&
+        (!incoming().keys().contains('transactions') || incoming().transactions is list) &&
+        (!incoming().keys().contains('realizedMovements') || incoming().realizedMovements is list) &&
+        (!incoming().keys().contains('trash_bin') || incoming().trash_bin is list)
+      );
+
+      allow delete: if isOwner(userId) && isValidId(profileId);
+    }
+  }
+}

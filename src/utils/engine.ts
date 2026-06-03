@@ -554,9 +554,8 @@ export function calculateLedger(
       } else if (freq === 'Quincenal') {
         months.forEach(m => {
           const lastDayNum = getDaysInMonth(m.year, m.month);
-          const day1 = Math.min(liab.due_day, lastDayNum);
-          const base2 = liab.due_day <= 15 ? liab.due_day + 15 : liab.due_day - 15;
-          const day2 = Math.min(base2, lastDayNum);
+          const day1 = Math.min(14, lastDayNum);
+          const day2 = Math.min(28, lastDayNum);
 
           const uniqueDays = Array.from(new Set([day1, day2])).sort((a, b) => a - b);
           uniqueDays.forEach((day, idx) => {
@@ -575,7 +574,7 @@ export function calculateLedger(
           });
         });
       } else if (freq === 'Semanal') {
-        const targetWeekday = parseInt(String(liab.due_day)) || 1;
+        const targetWeekday = 1; // Fijo todos los Lunes
         let iterD = new Date(startDate);
         while (iterD <= endDate && iterD <= liabEndDate) {
           let wd = iterD.getDay();

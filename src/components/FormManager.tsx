@@ -231,8 +231,16 @@ export default function FormManager({
 
     const totalVal = parseFloat(liabTotal) || 0;
     const quotaVal = parseFloat(liabQuota) || 0;
-    const dueDayVal = parseInt(liabDueDay) || 15;
     const limitVal = parseFloat(liabCreditLimit) || 0;
+
+    let dueDayVal = parseInt(liabDueDay) || 15;
+    if (liabType === 'Prestamo') {
+      if (liabFrequency === 'Semanal') {
+        dueDayVal = 1; // lunes = 1
+      } else if (liabFrequency === 'Quincenal') {
+        dueDayVal = 14; // 14 y 28
+      }
+    }
 
     onLiabilityAdd({
       id: editingLiability ? editingLiability.id : undefined,
@@ -730,13 +738,13 @@ export default function FormManager({
               <>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-slate-500">Saldo Pendiente de Deuda ($)</label>
+                    <label className="text-xs font-semibold text-slate-500">Monto Total de la Deuda ($)</label>
                     <input
                       type="number"
                       step="0.01"
                       min="0"
                       required
-                      placeholder="Monto remanente"
+                      placeholder="Monto total de la deuda"
                       value={liabTotal}
                       onChange={e => setLiabTotal(e.target.value)}
                       className="w-full text-sm rounded-xl py-2 px-3 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
@@ -772,20 +780,29 @@ export default function FormManager({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-slate-550">
-                      {liabFrequency === 'Semanal' ? 'Día de pago Semanal (1-7)' : 'Día de vencimiento (1-31)'}
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max={liabFrequency === 'Semanal' ? '7' : '31'}
-                      required
-                      value={liabDueDay}
-                      onChange={e => setLiabDueDay(e.target.value)}
-                      className="w-full text-sm rounded-xl py-2 px-3 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
-                    />
-                  </div>
+                  {liabFrequency === 'Mensual' ? (
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-xs font-semibold text-slate-550">
+                        Día de vencimiento (1-31)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        required
+                        value={liabDueDay}
+                        onChange={e => setLiabDueDay(e.target.value)}
+                        className="w-full text-sm rounded-xl py-2 px-3 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1 bg-slate-100/60 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-700/50 text-center justify-center">
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Fechas de Pago Automáticas</span>
+                      <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
+                        {liabFrequency === 'Quincenal' ? 'Cada 14 y 28 del mes' : 'Todos los Lunes'}
+                      </p>
+                    </div>
+                  )}
 
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-semibold text-slate-500">Fecha de Inicio del Préstamo</label>
@@ -814,13 +831,13 @@ export default function FormManager({
               <>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-slate-500">Saldo Deudor de Tarjeta ($)</label>
+                    <label className="text-xs font-semibold text-slate-500">Monto Total de la Deuda ($)</label>
                     <input
                       type="number"
                       step="0.01"
                       min="0"
                       required
-                      placeholder="Deuda actual en la tarjeta"
+                      placeholder="Monto total de la deuda"
                       value={liabTotal}
                       onChange={e => setLiabTotal(e.target.value)}
                       className="w-full text-sm rounded-xl py-2 px-3 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-700 outline-none focus:border-emerald-500"
@@ -957,7 +974,13 @@ export default function FormManager({
                               </>
                             ) : (
                               <>
-                                Día de Pago: <span className="font-semibold">{liab.due_day}</span> • Fecha fin: <span className="font-semibold">{liab.end_date}</span>
+                                Día de Pago: <span className="font-semibold">
+                                  {liab.frequency === 'Semanal' 
+                                    ? 'Todos los Lunes' 
+                                    : liab.frequency === 'Quincenal' 
+                                      ? 'Días 14 y 28' 
+                                      : `${liab.due_day}`}
+                                </span> • Frecuencia: <span className="font-semibold">{liab.frequency}</span> • Fecha fin: <span className="font-semibold">{liab.end_date}</span>
                               </>
                             )}
                           </p>
