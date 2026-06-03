@@ -1,0 +1,18 @@
+{
+  "short_name": "Finanzas Proyectadas",
+  "name": "Control de Finanzas y Presupuesto Proyectado",
+  "description": "Herramienta responsiva de planeación de flujos de caja, provisión sistemática, control de deudas revolving de TDC y conciliación diaria de egresos.",
+  "start_url": "./",
+  "background_color": "#070913",
+  "theme_color": "#0891b2",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://img.icons8.com/isometric/512/money-box.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Control de Finanzas Proyectadas",
+  "description": "Aplicación responsiva e interactiva tipo PWA para planificar el presupuesto mensual, proyectar flujo de caja diario, registrar gastos intermedios, simular amortizaciones de préstamos y tarjetas de crédito, y recibir alertas de liquidez.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
