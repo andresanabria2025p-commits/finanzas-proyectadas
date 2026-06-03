@@ -70,12 +70,13 @@ export function calculateLedger(
   today.setHours(0, 0, 0, 0);
 
   // Mapear los movimientos realizados/omitidos para una búsqueda rápida
-  const realizedLookup: Record<string, { status: string; actual_amount: number; projected_amount: number }> = {};
+  const realizedLookup: Record<string, { status: string; actual_amount: number; projected_amount: number; realized_date?: string }> = {};
   realizedMovements.forEach(r => {
     realizedLookup[`${r.movement_type}_${r.source_id}_${r.date}`] = {
       status: r.status,
       actual_amount: parseFloat(String(r.actual_amount)),
-      projected_amount: parseFloat(String(r.projected_amount))
+      projected_amount: parseFloat(String(r.projected_amount)),
+      realized_date: r.realized_date
     };
   });
 
@@ -104,6 +105,7 @@ export function calculateLedger(
         const projAmt = parseFloat(String(inc.amount)) || 0;
         let amt = projAmt;
         let finalStatus = d <= today ? 'Pendiente' : 'Proyectado';
+        let eventDateStr = dStr;
 
         if (hasRealized) {
           const realized = realizedLookup[key];
@@ -113,11 +115,14 @@ export function calculateLedger(
           } else {
             amt = realized.actual_amount;
             finalStatus = 'Realizado';
+            if (realized.realized_date) {
+              eventDateStr = realized.realized_date;
+            }
           }
         }
 
         incomeOccurrences.push({
-          date: dStr,
+          date: eventDateStr,
           type: 'Ingreso',
           concept: `Ingreso Recurrente (Día ${inc.day_of_month})`,
           amount: amt,
@@ -133,10 +138,10 @@ export function calculateLedger(
   });
 
   // Ordenar ingresos para lookup
-  incomeOccurrences.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  incomeOccurrences.sort((a, b) => new Date(a.date + 'T00:00:00').getTime() - new Date(b.date + 'T00:00:00').getTime());
   const incomeDates = incomeOccurrences
     .filter(x => x.status !== 'Omitido')
-    .map(x => new Date(x.date).getTime());
+    .map(x => new Date(x.date + 'T00:00:00').getTime());
 
   function getPrecedingIncomeDate(targetDate: Date): Date | null {
     const targetMs = targetDate.getTime();
@@ -168,6 +173,7 @@ export function calculateLedger(
     source_id: number;
     original_date: string;
     projected_amount: number;
+    can_delay?: number;
   }[] = [];
 
   // 3. Procesar Gastos Fijos (Mensuales y Quincenales)
@@ -186,6 +192,7 @@ export function calculateLedger(
           const hasRealized = key in realizedLookup;
           let amt = projAmt;
           let finalStatus = d <= today ? 'Pendiente' : 'Proyectado';
+          let eventDate = d;
 
           if (hasRealized) {
             const realized = realizedLookup[key];
@@ -195,11 +202,14 @@ export function calculateLedger(
             } else {
               amt = realized.actual_amount;
               finalStatus = 'Realizado';
+              if (realized.realized_date) {
+                eventDate = new Date(realized.realized_date + 'T00:00:00');
+              }
             }
           }
 
           rawEvents.push({
-            date: d,
+            date: eventDate,
             type: 'Gasto Fijo',
             concept: `Gasto Fijo: ${exp.name}`,
             amount: -amt,
@@ -208,7 +218,8 @@ export function calculateLedger(
             movement_type: 'expense',
             source_id: exp.id,
             original_date: dStr,
-            projected_amount: projAmt
+            projected_amount: projAmt,
+            can_delay: exp.can_delay
           });
         }
       } else if (exp.frequency === 'Quincenal') {
@@ -227,6 +238,7 @@ export function calculateLedger(
             const hasRealized = key in realizedLookup;
             let amt = projAmt;
             let finalStatus = d <= today ? 'Pendiente' : 'Proyectado';
+            let eventDate = d;
 
             if (hasRealized) {
               const realized = realizedLookup[key];
@@ -236,11 +248,14 @@ export function calculateLedger(
               } else {
                 amt = realized.actual_amount;
                 finalStatus = 'Realizado';
+                if (realized.realized_date) {
+                  eventDate = new Date(realized.realized_date + 'T00:00:00');
+                }
               }
             }
 
             rawEvents.push({
-              date: d,
+              date: eventDate,
               type: 'Gasto Fijo',
               concept: `Gasto Quincenal (Q${index + 1}): ${exp.name}`,
               amount: -amt,
@@ -249,7 +264,8 @@ export function calculateLedger(
               movement_type: 'expense',
               source_id: exp.id,
               original_date: dStr,
-              projected_amount: projAmt
+              projected_amount: projAmt,
+              can_delay: exp.can_delay
             });
           }
         });
@@ -272,6 +288,8 @@ export function calculateLedger(
         let amt = projAmt;
         let finalStatus = iterDate <= today ? 'Pendiente' : 'Proyectado';
 
+        let eventDate = new Date(iterDate);
+
         if (hasRealized) {
           const realized = realizedLookup[key];
           if (realized.status === 'Omitido') {
@@ -280,11 +298,14 @@ export function calculateLedger(
           } else {
             amt = realized.actual_amount;
             finalStatus = 'Realizado';
+            if (realized.realized_date) {
+              eventDate = new Date(realized.realized_date + 'T00:00:00');
+            }
           }
         }
 
-        // Buscar fecha de ingreso anterior para guardar provisiones
-        const precIncome = getPrecedingIncomeDate(iterDate);
+        // Buscar fecha de ingreso anterior para guardar provisiones based on possibly postponed eventDate
+        const precIncome = getPrecedingIncomeDate(eventDate);
         const provDate = precIncome ? new Date(precIncome) : new Date(startDate);
 
         // Si ya está realizado u omitido, la provisión bloquea el monto real/límite de la misma manera
@@ -298,11 +319,12 @@ export function calculateLedger(
           movement_type: 'expense',
           source_id: exp.id,
           original_date: dStr,
-          projected_amount: projAmt
+          projected_amount: projAmt,
+          can_delay: exp.can_delay
         });
 
         rawEvents.push({
-          date: new Date(iterDate),
+          date: eventDate,
           type: 'Gasto Fijo',
           concept: `Consumo Gasto Semanal: ${exp.name}`,
           amount: -amt,
@@ -311,11 +333,12 @@ export function calculateLedger(
           movement_type: 'expense',
           source_id: exp.id,
           original_date: dStr,
-          projected_amount: projAmt
+          projected_amount: projAmt,
+          can_delay: exp.can_delay
         });
 
         rawEvents.push({
-          date: new Date(iterDate),
+          date: eventDate,
           type: 'Liberación Reserva',
           concept: `Reversa Provisión: ${exp.name}`,
           amount: amt,
@@ -412,6 +435,7 @@ export function calculateLedger(
             const hasRealized = key in realizedLookup;
             let finalStatus = paymentDate <= today ? 'Pendiente' : 'Proyectado';
             let amt = paymentAmount;
+            let eventDate = paymentDate;
 
             if (hasRealized) {
               const realized = realizedLookup[key];
@@ -421,14 +445,17 @@ export function calculateLedger(
               } else {
                 amt = realized.actual_amount;
                 finalStatus = 'Realizado';
+                if (realized.realized_date) {
+                  eventDate = new Date(realized.realized_date + 'T00:00:00');
+                }
               }
             }
 
-            const nextInc = getNextIncomeDate(paymentDate);
+            const nextInc = getNextIncomeDate(eventDate);
 
-            // Regla de reserva: Si vence antes del siguiente ingreso, bloquear fondos en ingreso anterior
-            if (nextInc && paymentDate.getTime() < nextInc.getTime()) {
-              const precInc = getPrecedingIncomeDate(paymentDate);
+            // Regla de reserva: Si vence antes del siguiente ingreso, bloquear fondos en ingreso anterior (calculado sobre eventDate real/pospuesto)
+            if (nextInc && eventDate.getTime() < nextInc.getTime()) {
+              const precInc = getPrecedingIncomeDate(eventDate);
               const reserveDate = precInc ? new Date(precInc) : new Date(startDate);
 
               rawEvents.push({
@@ -441,11 +468,12 @@ export function calculateLedger(
                 movement_type: 'liability',
                 source_id: liab.id,
                 original_date: paymentDateStr,
-                projected_amount: paymentAmount
+                projected_amount: paymentAmount,
+                can_delay: liab.can_delay
               });
 
               rawEvents.push({
-                date: paymentDate,
+                date: eventDate,
                 type: 'Pago Pasivo',
                 concept: `Pago Tarjeta: ${liab.name} (${plan})`,
                 amount: -amt,
@@ -454,11 +482,12 @@ export function calculateLedger(
                 movement_type: 'liability',
                 source_id: liab.id,
                 original_date: paymentDateStr,
-                projected_amount: paymentAmount
+                projected_amount: paymentAmount,
+                can_delay: liab.can_delay
               });
 
               rawEvents.push({
-                date: paymentDate,
+                date: eventDate,
                 type: 'Liberación Reserva',
                 concept: `Liberación Reserva Deuda: ${liab.name}`,
                 amount: amt,
@@ -467,11 +496,12 @@ export function calculateLedger(
                 movement_type: 'liability',
                 source_id: liab.id,
                 original_date: paymentDateStr,
-                projected_amount: paymentAmount
+                projected_amount: paymentAmount,
+                can_delay: liab.can_delay
               });
             } else {
               rawEvents.push({
-                date: paymentDate,
+                date: eventDate,
                 type: 'Pasivo',
                 concept: `Pago Tarjeta Directo: ${liab.name} (${plan})`,
                 amount: -amt,
@@ -480,7 +510,8 @@ export function calculateLedger(
                 movement_type: 'liability',
                 source_id: liab.id,
                 original_date: paymentDateStr,
-                projected_amount: paymentAmount
+                projected_amount: paymentAmount,
+                can_delay: liab.can_delay
               });
             }
           }
@@ -597,6 +628,7 @@ export function calculateLedger(
         const hasRealized = key in realizedLookup;
         let amt = projAmt;
         let finalStatus = dDue <= today ? 'Pendiente' : 'Proyectado';
+        let eventDate = dDue;
 
         if (hasRealized) {
           const realized = realizedLookup[key];
@@ -606,14 +638,17 @@ export function calculateLedger(
           } else {
             amt = realized.actual_amount;
             finalStatus = 'Realizado';
+            if (realized.realized_date) {
+              eventDate = new Date(realized.realized_date + 'T00:00:00');
+            }
           }
         }
 
-        const nextInc = getNextIncomeDate(dDue);
+        const nextInc = getNextIncomeDate(eventDate);
 
-        // Si la cuota vence antes del ingreso inmediato próximo, provisionarla en el anterior
-        if (nextInc && dDue.getTime() < nextInc.getTime()) {
-          const precInc = getPrecedingIncomeDate(dDue);
+        // Si la cuota vence antes del ingreso inmediato próximo, provisionarla en el anterior (calculado sobre eventDate real/pospuesto)
+        if (nextInc && eventDate.getTime() < nextInc.getTime()) {
+          const precInc = getPrecedingIncomeDate(eventDate);
           const reserveDate = precInc ? new Date(precInc) : new Date(startDate);
 
           rawEvents.push({
@@ -626,11 +661,12 @@ export function calculateLedger(
             movement_type: 'liability',
             source_id: liab.id,
             original_date: dDueStr,
-            projected_amount: projAmt
+            projected_amount: projAmt,
+            can_delay: liab.can_delay
           });
 
           rawEvents.push({
-            date: dDue,
+            date: eventDate,
             type: 'Pago Pasivo',
             concept: item.concept,
             amount: -amt,
@@ -639,11 +675,12 @@ export function calculateLedger(
             movement_type: 'liability',
             source_id: liab.id,
             original_date: dDueStr,
-            projected_amount: projAmt
+            projected_amount: projAmt,
+            can_delay: liab.can_delay
           });
 
           rawEvents.push({
-            date: dDue,
+            date: eventDate,
             type: 'Liberación Reserva',
             concept: `Liberación Cuota: ${liab.name}`,
             amount: amt,
@@ -652,11 +689,12 @@ export function calculateLedger(
             movement_type: 'liability',
             source_id: liab.id,
             original_date: dDueStr,
-            projected_amount: projAmt
+            projected_amount: projAmt,
+            can_delay: liab.can_delay
           });
         } else {
           rawEvents.push({
-            date: dDue,
+            date: eventDate,
             type: 'Pasivo',
             concept: `Pago Directo Deuda: ${liab.name}`,
             amount: -amt,
@@ -665,7 +703,8 @@ export function calculateLedger(
             movement_type: 'liability',
             source_id: liab.id,
             original_date: dDueStr,
-            projected_amount: projAmt
+            projected_amount: projAmt,
+            can_delay: liab.can_delay
           });
         }
       });
@@ -750,8 +789,14 @@ export function calculateLedger(
     'Balance Final': 11
   };
 
+  // Filtrar eventos de modo que queden estrictamente dentro del rango start_date y end_date inclusive
+  const validEvents = rawEvents.filter(ev => {
+    const time = ev.date.getTime();
+    return time >= startDate.getTime() && time <= endDate.getTime();
+  });
+
   // Ordenamiento cronológico del ledger
-  rawEvents.sort((a, b) => {
+  validEvents.sort((a, b) => {
     if (a.date.getTime() !== b.date.getTime()) {
       return a.date.getTime() - b.date.getTime();
     }
@@ -761,7 +806,7 @@ export function calculateLedger(
     return a.concept.localeCompare(b.concept);
   });
 
-  // 8. Compilación y cálculo de balance neta acumulada en Caja
+  // 8. Compilación y cálculo de balance neta acumulada en Caja con Cola Dinámica de Autopostergación
   const ledger: LedgerRow[] = [];
 
   // Agregar fila inicial de Balance Inicial
@@ -779,10 +824,39 @@ export function calculateLedger(
   });
 
   let currentLiquidity = initialBalance;
+  const safetyMarginVal = parseFloat(String(config.safety_margin || '20')) || 0;
 
-  rawEvents.forEach(ev => {
+  // Cola dinámica para procesar cronológicamente, soportando auto-postergaciones
+  const eventQueue = validEvents.map(ev => ({
+    ...ev,
+    autoPostponed: false
+  }));
+
+  // Buscar estrictamente la siguiente fecha de ingreso
+  function getStrictlyNextIncomeDate(targetDate: Date): Date | null {
+    const targetMs = targetDate.getTime();
+    const upcoming = incomeDates.filter(t => t > targetMs);
+    if (upcoming.length > 0) {
+      return new Date(Math.min(...upcoming));
+    }
+    return null;
+  }
+
+  while (eventQueue.length > 0) {
+    // Re-ordenar siempre la cola para procesar en estricto orden cronológico y de prioridades
+    eventQueue.sort((a, b) => {
+      if (a.date.getTime() !== b.date.getTime()) {
+        return a.date.getTime() - b.date.getTime();
+      }
+      const pA = typePriority[a.type] !== undefined ? typePriority[a.type] : 99;
+      const pB = typePriority[b.type] !== undefined ? typePriority[b.type] : 99;
+      if (pA !== pB) return pA - pB;
+      return a.concept.localeCompare(b.concept);
+    });
+
+    const ev = eventQueue.shift()!;
+
     if (ev.status === 'Omitido') {
-      // Ignorar sumatorias y registrar sólo de adorno
       ledger.push({
         date: formatDateISO(ev.date),
         type: ev.type,
@@ -793,9 +867,51 @@ export function calculateLedger(
         movement_type: ev.movement_type,
         source_id: ev.source_id,
         original_date: ev.original_date,
-        projected_amount: ev.projected_amount
+        projected_amount: ev.projected_amount,
+        autoPostponed: ev.autoPostponed
       });
-      return;
+      continue;
+    }
+
+    // Regla de postergación dinámica:
+    // Si es un egreso proyectado o pendiente, y pagarlo ahora nos hace caer por debajo del colchón de seguridad,
+    // y hay un ingreso futuro, lo reprogramamos al próximo ingreso/quincena de flujo positivo.
+    const isOutflow = ev.amount < 0;
+    const isProvisionalOrPending = ev.status !== 'Realizado';
+
+    if (isOutflow && isProvisionalOrPending) {
+      const projectedLiquidity = currentLiquidity + ev.amount;
+      if (projectedLiquidity < safetyMarginVal) {
+        // SOLAMENTE SE PUEDE POSPONER SI can_delay === 1 (es decir, no es inflexible/obligatorio)
+        const isPostponable = ev.can_delay === 1;
+
+        if (isPostponable) {
+          const nextIncDate = getStrictlyNextIncomeDate(ev.date);
+          if (nextIncDate && nextIncDate.getTime() <= endDate.getTime()) {
+            // Guardar registro traza en el ledger en la fecha original
+            ledger.push({
+              date: formatDateISO(ev.date),
+              type: ev.type,
+              concept: `${ev.concept} (Resguardo Colchón: Pospuesto al ${formatDateSmall(nextIncDate)})`,
+              amount: 0,
+              liquidity: currentLiquidity,
+              status: 'Pospuesto',
+              movement_type: ev.movement_type,
+              source_id: ev.source_id,
+              original_date: ev.original_date,
+              projected_amount: ev.projected_amount,
+              autoPostponed: true,
+              postponedTo: formatDateISO(nextIncDate),
+              can_delay: ev.can_delay
+            });
+
+            ev.date = nextIncDate;
+            ev.autoPostponed = true;
+            eventQueue.push(ev); // Lo regresamos a la cola para calcularse en su nueva fecha
+            continue;
+          }
+        }
+      }
     }
 
     if (ev.impacts_liquidity) {
@@ -812,14 +928,14 @@ export function calculateLedger(
       movement_type: ev.movement_type,
       source_id: ev.source_id,
       original_date: ev.original_date,
-      projected_amount: ev.projected_amount
+      projected_amount: ev.projected_amount,
+      autoPostponed: ev.autoPostponed,
+      can_delay: ev.can_delay
     });
-  });
+  }
 
   // Alertas de Liquidez Insuficiente y de Ajuste por Déficit
   // Si encontramos que la liquidez neta es menor que el margen de seguridad o menor que 0, marcamos alertas
-  const safetyMarginVal = parseFloat(String(config.safety_margin || '20')) || 0;
-
   for (let i = 0; i < ledger.length; i++) {
     const row = ledger[i];
     if (row.type === 'Balance Inicial' || row.type === 'Balance Final' || row.status === 'Realizado' || row.status === 'Omitido') {
@@ -827,10 +943,8 @@ export function calculateLedger(
     }
 
     if (row.liquidity < 0) {
-      // Si la liquidez es menor a 0, ¡Falta liquidez real!
       row.status = 'Falta Liquidez';
     } else if (row.liquidity < safetyMarginVal) {
-      // Si la liquidez cae por debajo del margen de seguridad configurado por el usuario, ¡Alerta de Ajuste!
       row.status = 'Alerta de Ajuste';
     }
   }

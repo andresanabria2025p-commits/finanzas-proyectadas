@@ -61,6 +61,7 @@ export interface RealizedMovement {
   projected_amount: number;
   actual_amount: number;
   status: 'Realizado' | 'Omitido';
+  realized_date?: string; // Formato YYYY-MM-DD
 }
 
 export interface LedgerRow {
@@ -74,6 +75,9 @@ export interface LedgerRow {
   source_id: number | null;
   original_date: string; // dStr de la proyección
   projected_amount: number;
+  autoPostponed?: boolean;
+  postponedTo?: string;
+  can_delay?: number;
 }
 
 export interface OptimizedSuggestion {

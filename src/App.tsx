@@ -452,11 +452,6 @@ export default function App() {
 
     // 2. Modificar localStorage
     const pKey = (k: string) => `profiles_data_${profileId}_${k}`;
-    if (updatedFields.name !== undefined) {
-      const updatedProfilesList = profiles.map(p => p.id === profileId ? { ...p, name: updatedFields.name! } : p);
-      setProfiles(updatedProfilesList);
-      localStorage.setItem('profiles_list', JSON.stringify(updatedProfilesList));
-    }
     if (updatedFields.config !== undefined) localStorage.setItem(pKey('config'), JSON.stringify(updatedFields.config));
     if (updatedFields.incomes !== undefined) localStorage.setItem(pKey('incomes'), JSON.stringify(updatedFields.incomes));
     if (updatedFields.expenses !== undefined) localStorage.setItem(pKey('expenses'), JSON.stringify(updatedFields.expenses));
@@ -465,19 +460,34 @@ export default function App() {
     if (updatedFields.realizedMovements !== undefined) localStorage.setItem(pKey('realizedMovements'), JSON.stringify(updatedFields.realizedMovements));
     if (updatedFields.trash_bin !== undefined) localStorage.setItem(pKey('trash_bin'), JSON.stringify(updatedFields.trash_bin));
 
+    if (updatedFields.name !== undefined) {
+      setProfiles(prevProfiles => {
+        const exists = prevProfiles.some(p => p.id === profileId);
+        let updatedProfilesList;
+        if (exists) {
+          updatedProfilesList = prevProfiles.map(p => p.id === profileId ? { ...p, name: updatedFields.name! } : p);
+        } else {
+          updatedProfilesList = [...prevProfiles, { id: profileId, name: updatedFields.name! }];
+        }
+        localStorage.setItem('profiles_list', JSON.stringify(updatedProfilesList));
+        return updatedProfilesList;
+      });
+    }
+
     // 3. Sincronización en la Nube si hay sesión iniciada de Firebase Auth
     if (auth.currentUser) {
       try {
         const profileDocRef = doc(db, 'users', auth.currentUser.uid, 'profiles', String(profileId));
 
-        const displayName = updatedFields.name ?? (profiles.find(p => p.id === profileId)?.name || 'Perfil');
-        const docConfig = updatedFields.config ?? (profileId === currentProfileId ? config : JSON.parse(localStorage.getItem(pKey('config')) || JSON.stringify(DEFAULT_CONFIG)));
-        const docIncomes = updatedFields.incomes ?? (profileId === currentProfileId ? incomes : JSON.parse(localStorage.getItem(pKey('incomes')) || '[]'));
-        const docExpenses = updatedFields.expenses ?? (profileId === currentProfileId ? expenses : JSON.parse(localStorage.getItem(pKey('expenses')) || '[]'));
-        const docLiabilities = updatedFields.liabilities ?? (profileId === currentProfileId ? liabilities : JSON.parse(localStorage.getItem(pKey('liabilities')) || '[]'));
-        const docTransactions = updatedFields.transactions ?? (profileId === currentProfileId ? transactions : JSON.parse(localStorage.getItem(pKey('transactions')) || '[]'));
-        const docRealized = updatedFields.realizedMovements ?? (profileId === currentProfileId ? realizedMovements : JSON.parse(localStorage.getItem(pKey('realizedMovements')) || '[]'));
-        const docTrash = updatedFields.trash_bin ?? (profileId === currentProfileId ? trashBin : JSON.parse(localStorage.getItem(pKey('trash_bin')) || '[]'));
+        const currentProfilesFromLS: Profile[] = JSON.parse(localStorage.getItem('profiles_list') || '[]');
+        const displayName = updatedFields.name ?? (currentProfilesFromLS.find(p => p.id === profileId)?.name || 'Perfil');
+        const docConfig = updatedFields.config ?? JSON.parse(localStorage.getItem(pKey('config')) || JSON.stringify(DEFAULT_CONFIG));
+        const docIncomes = updatedFields.incomes ?? JSON.parse(localStorage.getItem(pKey('incomes')) || '[]');
+        const docExpenses = updatedFields.expenses ?? JSON.parse(localStorage.getItem(pKey('expenses')) || '[]');
+        const docLiabilities = updatedFields.liabilities ?? JSON.parse(localStorage.getItem(pKey('liabilities')) || '[]');
+        const docTransactions = updatedFields.transactions ?? JSON.parse(localStorage.getItem(pKey('transactions')) || '[]');
+        const docRealized = updatedFields.realizedMovements ?? JSON.parse(localStorage.getItem(pKey('realizedMovements')) || '[]');
+        const docTrash = updatedFields.trash_bin ?? JSON.parse(localStorage.getItem(pKey('trash_bin')) || '[]');
 
         await setDoc(profileDocRef, {
           id: String(profileId),
@@ -763,7 +773,8 @@ export default function App() {
     dateStr: string,
     projectedAmount: number,
     actualAmount: number,
-    status: 'Realizado' | 'Omitido'
+    status: 'Realizado' | 'Omitido',
+    realizedDate?: string
   ) => {
     // Buscar si ya existía una conciliación previa para esta ocurrencia
     const updated = realizedMovements.filter(
@@ -776,7 +787,8 @@ export default function App() {
       date: dateStr,
       projected_amount: projectedAmount,
       actual_amount: actualAmount,
-      status: status
+      status: status,
+      realized_date: realizedDate
     };
 
     saveRealizedList([...updated, record]);
@@ -789,6 +801,48 @@ export default function App() {
     );
     saveRealizedList(updated);
     showToast('Conciliación revertida. Estatus restaurado a programado.', 'info');
+  };
+
+  const handleAmortizeExpense = (
+    movementType: string,
+    sourceId: number,
+    dateStr: string,
+    projectedAmount: number,
+    concept: string,
+    installments: { date: string; amount: number }[]
+  ) => {
+    // 1. Omitir el movimiento original proyectado para no duplicar sumatorias
+    const updated = realizedMovements.filter(
+      r => !(r.movement_type === movementType && r.source_id === sourceId && r.date === dateStr)
+    );
+
+    const record: RealizedMovement = {
+      movement_type: movementType,
+      source_id: sourceId,
+      date: dateStr,
+      projected_amount: projectedAmount,
+      actual_amount: 0,
+      status: 'Omitido'
+    };
+
+    const nextRealizedList = [...updated, record];
+
+    // 2. Crear las N transacciones manuales amortizadas
+    const newTxns: Transaction[] = installments.map((inst, index) => ({
+      id: Date.now() + index,
+      date: inst.date,
+      concept: `Cuota ${index + 1}/${installments.length}: ${concept} [Amortizado]`,
+      amount: -Math.abs(inst.amount), // Siempre egreso
+      credit_card_id: null
+    }));
+
+    // Persistir ambas listas
+    persistProfile(currentProfileId, {
+      realizedMovements: nextRealizedList,
+      transactions: [...transactions, ...newTxns]
+    });
+    
+    showToast(`Dividido en ${installments.length} cuotas amortizables con éxito e ingreso original descartado.`, 'success');
   };
 
   const handleRestoreTrash = (item: TrashItem) => {
@@ -1232,7 +1286,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col font-sans transition-colors duration-300">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col font-sans transition-colors duration-300 max-w-full overflow-x-hidden">
       
       {/* NO BACKGROUND GLOWS - PURE CLEAN COHESIVE SLATE CANVAS */}
 
@@ -1448,6 +1502,7 @@ export default function App() {
                 expenses={expenses}
                 liabilities={liabilities}
                 transactions={transactions}
+                safetyMargin={Number(config.safety_margin)}
                 onDeleteIncome={handleDeleteIncome}
                 onStartEditIncome={setEditingIncome}
                 onDeleteExpense={handleDeleteExpense}
@@ -1458,6 +1513,7 @@ export default function App() {
                 onStartEditTransaction={setEditingTransaction}
                 onConfirmRealizedStatus={handleConfirmRealizedStatus}
                 onDeleteRealizedStatus={handleDeleteRealizedStatus}
+                onAmortizeExpense={handleAmortizeExpense}
               />
             )}
           </div>
